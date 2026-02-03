@@ -1,148 +1,129 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-import sqlite3
 from io import BytesIO
 from datetime import datetime
 import plotly.express as px
 
-# --- 1. الإعدادات الأساسية ---
-st.set_page_config(page_title="Steel Quality QC Pro", layout="wide", page_icon="🏗️")
+# مكتبات الملصقات
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import mm
+from reportlab.graphics.barcode import qr
+from reportlab.graphics.shapes import Drawing, renderPDF
 
-# --- 2. محرك قاعدة البيانات ---
-def init_db():
-    conn = sqlite3.connect('factory_qc.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS production_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT,
-                    date_only TEXT,
-                    time_only TEXT,
-                    shift TEXT,
-                    operator TEXT,
-                    inspector TEXT,
-                    ccm TEXT,
-                    heat TEXT,
-                    grade TEXT,
-                    strand TEXT,
-                    rh REAL,
-                    status TEXT,
-                    d1 REAL,
-                    d2 REAL
-                )''')
-    conn.commit()
-    conn.close()
+# --- 1. الإعدادات والربط ---
+st.set_page_config(page_title="Steel Quality Cloud", layout="wide", page_icon="☁️")
 
-def save_data(results, shift, operator, inspector, ccm, heat, grade):
-    conn = sqlite3.connect('factory_qc.db')
-    c = conn.cursor()
-    now = datetime.now()
-    ts = now.strftime("%Y-%m-%d %H:%M:%S")
-    dt = now.strftime("%Y-%m-%d")
-    tm = now.strftime("%H:%M:%S")
-    for r in results:
-        if r['d1'] > 0:
-            c.execute('''INSERT INTO production_logs 
-                (timestamp, date_only, time_only, shift, operator, inspector, ccm, heat, grade, strand, rh, status, d1, d2)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                (ts, dt, tm, shift, operator, inspector, ccm, heat, grade, r['strand'], r['rh'], r['status'], r['d1'], r['d2']))
-    conn.commit()
-    conn.close()
+# ربط جوجل شيت (يجب وضع رابط الملف في secrets)
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-init_db()
+def fetch_data():
+    return conn.read(worksheet="production_logs", ttl="0")
+
+def save_to_sheets(new_rows_df):
+    existing_data = fetch_data()
+    updated_df = pd.concat([existing_data, new_rows_df], ignore_index=True)
+    conn.update(worksheet="production_logs", data=updated_df)
+
+# --- 2. وظيفة توليد الملصق (نفس الكود السابق) ---
+def generate_label_pdf(heat_no, grade, ccm, date_str, storage, b_count, s_len):
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=(100*mm, 100*mm))
+    c.rect(2*mm, 2*mm, 96*mm, 96*mm)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(50*mm, 90*mm, "PRODUCTION & QC LABEL")
+    c.setFont("Helvetica", 10)
+    y = 75*mm
+    lines = [f"Heat No: {heat_no}", f"Grade: {grade}", f"Storage: {storage}", 
+             f"Billet Count: {b_count}", f"CCM: {ccm}", f"Date: {date_str}"]
+    if s_len > 0: lines.append(f"Short Billet: {s_len} m")
+    for line in lines:
+        c.drawString(10*mm, y, line)
+        y -= 7*mm
+    qr_code = qr.QrCodeWidget(f"HEAT:{heat_no}|LOC:{storage}")
+    bounds = qr_code.getBounds()
+    width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
+    d = Drawing(30*mm, 30*mm, transform=[30*mm/width, 0, 0, 30*mm/height, 0, 0])
+    d.add(qr_code)
+    renderPDF.draw(d, c, 35*mm, 5*mm)
+    c.save()
+    buffer.seek(0)
+    return buffer
 
 # --- 3. واجهة المستخدم ---
 if "auth" not in st.session_state: st.session_state.auth = False
 
 if not st.session_state.auth:
-    st.title("🔐 نظام الرقابة على الجودة")
-    if st.text_input("كلمة مرور النظام:", type="password") == "1100":
-        if st.button("دخول"): 
+    st.title("🔐 الدخول للنظام السحابي")
+    if st.text_input("كلمة المرور:", type="password") == "1100":
+        if st.button("دخول"):
             st.session_state.auth = True
             st.rerun()
 else:
-    # الهيدر الاحترافي
-    st.markdown(f"""
-    <div style="background-color:#003366;padding:10px;border-radius:10px">
-    <h1 style="color:white;text-align:center;">نظام إدارة جودة المربعات - CCM Quality Control</h1>
-    <p style="color:white;text-align:center;">التاريخ: {datetime.now().strftime('%Y-%m-%d')} | الوقت: {datetime.now().strftime('%H:%M:%S')}</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(f'<div style="background-color:#004d40;padding:10px;border-radius:10px"><h2 style="color:white;text-align:center;">Cloud QC Management</h2></div>', unsafe_allow_html=True)
 
-    t1, t2, t3 = st.tabs(["📝 تسجيل صبة جديدة", "📊 تحليل الأداء", "📂 الأرشيف"])
+    t1, t2, t3 = st.tabs(["📝 إدخال جديد", "📊 لوحة التحكم", "🔍 البحث والأرشيف"])
 
     with t1:
-        with st.form("qc_form"):
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                shift = st.selectbox("الوردية", ["أ (A)", "ب (B)", "ج (C)", "د (D)"])
+        with st.form("main_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                heat = st.text_input("رقم الصبة")
+                grade = st.selectbox("الرتبة", ["B500", "B500W", "SAE1006", "SAE1008"])
                 ccm = st.selectbox("الماكينة", ["CCM01", "CCM02"])
-            with c2:
-                operator = st.text_input("اسم عامل الصب")
-                inspector = st.text_input("اسم المفتش")
-            with c3:
-                heat = st.text_input("رقم الصبة", placeholder="مثال: 20261234")
-                grade = st.selectbox("رتبة الحديد", ["B500", "B500W", "B500G", "G40", "SAE1006", "SAE1008", "SAE1010", "SAE1010ENTP"])
-            with c4:
-                rh_limit = st.number_input("حد المعينية (mm)", value=8.0)
-                side_size = st.text_input("المقاس (Side)", "130")
+            with col2:
+                shift = st.selectbox("الوردية", ["A", "B", "C", "D"])
+                operator = st.text_input("عامل الصب")
+                area = st.selectbox("المنطقة", ["RM01", "RM02", "RM03", "SMS"])
+            with col3:
+                billet_count = st.number_input("العدد", value=40)
+                box = st.selectbox("الصندوق", [f"Box {i}" for i in range(1, 9 if area=="SMS" else 5)])
+                short_l = st.number_input("Short Billet (m)", value=0.0)
 
-            st.markdown("---")
-            input_cols = st.columns(5)
-            strand_data = []
+            st.divider()
+            strand_cols = st.columns(5)
+            entries = []
             for i in range(1, 6):
-                with input_cols[i-1]:
-                    st.subheader(f"Strand {i}")
-                    d1 = st.number_input(f"D1", 0.0, key=f"d1_{i}")
-                    d2 = st.number_input(f"D2", 0.0, key=f"d2_{i}")
-                    calc_rh = round(abs(d1-d2), 2)
-                    res_status = "PASS" if calc_rh <= rh_limit else "REJECT"
-                    strand_data.append({'strand': f"S0{i}", 'd1': d1, 'd2': d2, 'rh': calc_rh, 'status': res_status})
-                    if d1 > 0:
-                        st.info(f"Rh: {calc_rh} - {res_status}")
+                with strand_cols[i-1]:
+                    st.write(f"Strand {i}")
+                    d1 = st.number_input(f"D1", key=f"d1_{i}", min_value=0.0)
+                    d2 = st.number_input(f"D2", key=f"d2_{i}", min_value=0.0)
+                    sample = st.checkbox(f"عينة", key=f"s_{i}")
+                    s_no = st.text_input("ترتيب", key=f"sn_{i}") if sample else ""
+                    rh = round(abs(d1-d2), 2)
+                    status = "PASS" if rh <= 8.0 else "REJECT"
+                    entries.append({"s": f"S0{i}", "d1": d1, "d2": d2, "rh": rh, "status": status, "sample": f"S{i}-#{s_no}" if sample else "None"})
 
-            submit = st.form_submit_button("💾 حفظ الصبة في السجل الوقتي", use_container_width=True)
-            if submit:
-                if not operator or not heat:
-                    st.error("⚠️ يرجى ملء البيانات الأساسية (رقم الصبة واسم العامل)")
-                else:
-                    save_data(strand_data, shift, operator, inspector, ccm, heat, grade)
-                    st.success("✅ تم الحفظ بنجاح وتوثيق الوقت")
-                    st.balloons()
+            if st.form_submit_button("🚀 حفظ في السحاب + طباعة"):
+                new_data = []
+                now = datetime.now()
+                for e in entries:
+                    if e['d1'] > 0:
+                        new_data.append({
+                            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                            "date_only": now.strftime("%Y-%m-%d"),
+                            "time_only": now.strftime("%H:%M:%S"),
+                            "shift": shift, "operator": operator, "inspector": "Admin",
+                            "ccm": ccm, "heat": heat, "grade": grade, "strand": e['s'],
+                            "rh": e['rh'], "status": e['status'], "d1": e['d1'], "d2": e['d2'],
+                            "billet_count": billet_count, "storage_loc": f"{area} ({box})",
+                            "short_billet_length": short_l, "sample_info": e['sample']
+                        })
+                if new_data:
+                    save_to_sheets(pd.DataFrame(new_data))
+                    st.success("تم التزامن مع Google Sheets!")
+                    label = generate_label_pdf(heat, grade, ccm, now.strftime("%Y-%m-%d"), f"{area} ({box})", billet_count, short_l)
+                    st.download_button("🖨️ تحميل الملصق", label, f"{heat}.pdf")
 
     with t2:
-        df = pd.read_sql_query("SELECT * FROM production_logs", sqlite3.connect('factory_qc.db'))
+        df = fetch_data()
         if not df.empty:
-            st.subheader("📊 إحصائيات الجودة الزمنية")
-            # رسم بياني للوقت
-            fig = px.scatter(df, x="time_only", y="rh", color="shift", size="rh", hover_data=['operator', 'heat'])
-            fig.add_hline(y=rh_limit, line_color="red", line_dash="dash")
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # مقارنة العمال
-            st.subheader("👷 أداء العمال (متوسط المعينية)")
-            worker_perf = df.groupby('operator')['rh'].mean().sort_values().reset_index()
-            st.plotly_chart(px.bar(worker_perf, x='operator', y='rh', color='rh'), use_container_width=True)
-        else:
-            st.warning("لا توجد بيانات للتحليل.")
+            st.plotly_chart(px.histogram(df, x="status", color="status", title="حالة الجودة الإجمالية"))
+            st.plotly_chart(px.line(df, x="timestamp", y="rh", color="strand", title="تطور المعينية عبر الزمن"))
 
     with t3:
-        st.subheader("📂 السجل التاريخي الكامل")
-        history = pd.read_sql_query("SELECT * FROM production_logs ORDER BY id DESC", sqlite3.connect('factory_qc.db'))
-        st.dataframe(history, use_container_width=True)
-        
-        # تصدير إكسل
-        towrite = BytesIO()
-        history.to_excel(towrite, index=False, engine='xlsxwriter')
-        st.download_button("📥 تحميل التقرير الشامل (Excel)", towrite.getvalue(), f"QC_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
-
-# --- 4. التنبيهات الذكية ---
-def check_alerts():
-    conn = sqlite3.connect('factory_qc.db')
-    df = pd.read_sql_query("SELECT strand, status FROM production_logs ORDER BY id DESC LIMIT 15", conn)
-    conn.close()
-    for s in [f"S0{i}" for i in range(1,6)]:
-        s_data = df[df['strand'] == s]
-        if len(s_data) >= 3 and all(s_data['status'].head(3) == 'REJECT'):
-            st.sidebar.error(f"⚠️ خطر: الخيط {s} مرفوض لـ 3 مرات متتالية!")
-
-if st.session_state.auth: check_alerts()
+        df = fetch_data()
+        search = st.text_input("🔍 ابحث برقم الصبة أو مكان التخزين:")
+        if search:
+            results = df[df['heat'].astype(str).str.contains(search) | df['storage_loc'].str.contains(search)]
+            st.dataframe(results)
