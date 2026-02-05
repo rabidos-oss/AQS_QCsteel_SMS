@@ -10,7 +10,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import mm
 from reportlab.graphics.barcode import qr
 from reportlab.graphics.shapes import Drawing
-from reportlab.graphics import renderPDF   # ← التصحيح هنا
+from reportlab.graphics import renderPDF
 
 # --- 1. الإعدادات الأساسية ---
 st.set_page_config(page_title="Steel Quality QC Pro", layout="wide", page_icon="🏗️")
@@ -77,7 +77,8 @@ def generate_label_pdf(heat_no, grade, ccm, date_str, storage, b_count, s_len):
 init_db()
 
 # --- 4. واجهة المستخدم ---
-if "auth" not in st.session_state: st.session_state.auth = False
+if "auth" not in st.session_state:
+    st.session_state.auth = False
 
 if not st.session_state.auth:
     st.title("🔐 نظام الرقابة على الجودة")
@@ -86,7 +87,8 @@ if not st.session_state.auth:
         if pwd == "1100":
             st.session_state.auth = True
             st.rerun()
-        else: st.error("❌ كلمة المرور خاطئة")
+        else:
+            st.error("❌ كلمة المرور خاطئة")
 else:
     st.markdown(f"""<div style="background-color:#003366;padding:10px;border-radius:10px">
     <h1 style="color:white;text-align:center;margin:0;">CCM Quality Control Pro</h1>
@@ -126,18 +128,44 @@ else:
                     has_sample = st.checkbox(f"عينة S{i}")
                     s_info = st.text_input(f"ترتيبها", key=f"s_val_{i}") if has_sample else ""
                     
-                    calc_rh = round(abs(d1-d2), 2)
+                    calc_rh = round(abs(d1 - d2), 2)
                     status = "PASS" if calc_rh <= rh_limit else "REJECT"
-                    strand_results.append({'strand': f"S0{i}", 'd1': d1, 'd2': d2, 'rh': calc_rh, 'status': status, 'sample': f"S{i}-#{s_info}" if has_sample else "None"})
-                    if d1 > 0: st.markdown(f"**Rh: {calc_rh}** ({status})")
+                    strand_results.append({
+                        'strand': f"S0{i}", 
+                        'd1': d1, 
+                        'd2': d2, 
+                        'rh': calc_rh, 
+                        'status': status, 
+                        'sample': f"S{i}-#{s_info}" if has_sample else "None"
+                    })
+                    if d1 > 0:
+                        st.markdown(f"**Rh: {calc_rh}** ({status})")
 
-            if st.form_submit_button("💾 حفظ الصبة وتوليد الملصق", use_container_width=True):
-                if not heat or not operator: st.error("⚠️ بيانات ناقصة!")
-                else:
-                    save_data(strand_results, shift, operator, inspector, ccm, heat, grade, billet_count, storage_loc, short_len)
-                    st.success("✅ تم الحفظ")
-                    label_pdf = generate_label_pdf(heat, grade, ccm, datetime.now().strftime('%Y-%m-%d'), storage_loc, billet_count, short_len)
-                    st.download_button("🖨️ تحميل الملصق للطباعة", data=label_pdf, file_name=f"Label_{heat}.pdf", mime="application/pdf")
+            submitted = st.form_submit_button("💾 حفظ الصبة وتوليد الملصق", use_container_width=True)
+
+        # خارج الـ form
+        if submitted:
+            if not heat or not operator:
+                st.error("⚠️ بيانات ناقصة! (رقم الصبة أو اسم العامل مطلوب)")
+            else:
+                save_data(strand_results, shift, operator, inspector, ccm, heat, grade, billet_count, storage_loc, short_len)
+                st.success(f"✅ تم حفظ الصبة {heat} بنجاح")
+                
+                pdf_buffer = generate_label_pdf(
+                    heat, grade, ccm, datetime.now().strftime('%Y-%m-%d'),
+                    storage_loc, billet_count, short_len
+                )
+                st.session_state['new_label_pdf'] = pdf_buffer
+                st.session_state['new_heat'] = heat
+
+        if 'new_label_pdf' in st.session_state:
+            st.download_button(
+                label=f"🖨️ تحميل ملصق الصبة الجديدة ({st.session_state['new_heat']})",
+                data=st.session_state['new_label_pdf'],
+                file_name=f"Label_{st.session_state['new_heat']}.pdf",
+                mime="application/pdf",
+                key="download_new_label"
+            )
 
     with t2:
         with sqlite3.connect('factory_qc.db') as conn:
@@ -149,14 +177,37 @@ else:
     with t3:
         with sqlite3.connect('factory_qc.db') as conn:
             history = pd.read_sql_query("SELECT * FROM production_logs ORDER BY id DESC", conn)
+        
         if not history.empty:
             search = st.text_input("🔎 ابحث برقم الصبة أو مكان التخزين:")
-            filtered = history[history['heat'].astype(str).str.contains(search) | history['storage_loc'].str.contains(search)]
+            filtered = history[
+                history['heat'].astype(str).str.contains(search, case=False) |
+                history['storage_loc'].str.contains(search, case=False)
+            ]
             st.dataframe(filtered, use_container_width=True)
             
             if not filtered.empty:
                 st.markdown("---")
-                sel_heat = st.selectbox("إعادة طباعة صبة:", filtered['heat'].unique())
-                h_data = history[history['heat'] == sel_heat].iloc[0]
-                reprint_pdf = generate_label_pdf(h_data['heat'], h_data['grade'], h_data['ccm'], h_data['date_only'], h_data['storage_loc'], h_data['billet_count'], h_data['short_billet_length'])
-                st.download_button(f"إعادة طباعة {sel_heat}", reprint_pdf, f"Label_{sel_heat}.pdf", "application/pdf")
+                sel_heat = st.selectbox("إعادة طباعة صبة:", options=filtered['heat'].unique(), key="reprint_select")
+                
+                if sel_heat:
+                    h_data = history[history['heat'] == sel_heat].iloc[0]
+                    
+                    if st.button(f"📄 توليد ملصق للصبة {sel_heat}", key=f"gen_{sel_heat}"):
+                        reprint_pdf = generate_label_pdf(
+                            h_data['heat'], h_data['grade'], h_data['ccm'],
+                            h_data['date_only'], h_data['storage_loc'],
+                            h_data['billet_count'], h_data['short_billet_length']
+                        )
+                        st.session_state['reprint_pdf'] = reprint_pdf
+                        st.session_state['reprint_heat'] = sel_heat
+                        st.success(f"تم توليد ملصق {sel_heat}")
+
+                if 'reprint_pdf' in st.session_state:
+                    st.download_button(
+                        label=f"⬇️ تحميل ملصق {st.session_state['reprint_heat']}",
+                        data=st.session_state['reprint_pdf'],
+                        file_name=f"Label_{st.session_state['reprint_heat']}.pdf",
+                        mime="application/pdf",
+                        key="download_reprint_label"
+                    )
