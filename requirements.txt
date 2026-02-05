@@ -3,3 +3,5 @@ reportlab
 pandas
 st-gsheets-connection
 plotly
+reportlab
+
