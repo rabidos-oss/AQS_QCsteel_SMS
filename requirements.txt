@@ -1,4 +1,3 @@
-st-gsheets-connection
 pandas
 plotly
-reportlab
+xlsxwriter
