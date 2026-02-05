@@ -9,7 +9,8 @@ import plotly.express as px
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import mm
 from reportlab.graphics.barcode import qr
-from reportlab.graphics.shapes import Drawing, renderPDF
+from reportlab.graphics.shapes import Drawing
+from reportlab.graphics import renderPDF   # ← التصحيح هنا
 
 # --- 1. الإعدادات الأساسية ---
 st.set_page_config(page_title="Steel Quality QC Pro", layout="wide", page_icon="🏗️")
